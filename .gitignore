@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Node (si se usa sopp-lint localmente)
+node_modules/

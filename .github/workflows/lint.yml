@@ -1,0 +1,219 @@
+name: SOPP Lint
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'chapters/**/*.md'
+      - 'shared/**/*.md'
+
+jobs:
+  lint:
+    name: Validar assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar que no se modifican archivos protegidos
+        run: |
+          PROTECTED=$(git diff --name-only origin/main...HEAD | grep -E '^\.github/' || true)
+          if [ -n "$PROTECTED" ]; then
+            echo "❌ ERROR: No se permite modificar archivos protegidos en PRs de contenido:"
+            echo "$PROTECTED"
+            exit 1
+          fi
+
+      - name: Descargar taxonomy.json y asset-schemas.json del core
+        run: |
+          curl -sL "https://raw.githubusercontent.com/${{ github.repository_owner }}/pragma-ai-knowledge-core/main/_config/taxonomy.json" -o /tmp/taxonomy.json
+          curl -sL "https://raw.githubusercontent.com/${{ github.repository_owner }}/pragma-ai-knowledge-core/main/_config/asset-schemas.json" -o /tmp/asset-schemas.json
+          
+          if [ ! -s /tmp/taxonomy.json ]; then
+            echo "⚠ No se pudo descargar taxonomy.json — usando validación básica"
+            echo '{"chapters":{"backend":{},"calidad":{},"mobile":{},"frontend":{},"arquitectura":{}}}' > /tmp/taxonomy.json
+          fi
+          
+          if [ ! -s /tmp/asset-schemas.json ]; then
+            echo "⚠ No se pudo descargar asset-schemas.json — omitiendo validación de secciones"
+          fi
+
+      - name: Obtener archivos modificados
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/main...HEAD | grep '\.md$' || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "count=$(echo "$FILES" | grep -c '.' || echo 0)" >> $GITHUB_OUTPUT
+
+      - name: Validar frontmatter y estructura
+        if: steps.changed.outputs.count != '0'
+        run: |
+          ERRORS=0
+          WARNINGS=0
+          TAXONOMY="/tmp/taxonomy.json"
+
+          VALID_CHAPTERS=$(jq -r '.chapters | keys[]' "$TAXONOMY")
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            echo "━━━ Validando: $FILE"
+
+            # FR-001: Verificar frontmatter
+            if ! head -1 "$FILE" | grep -q "^---$"; then
+              echo "  ✗ FR-001 ERROR: No tiene frontmatter YAML"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+
+            FRONTMATTER=$(sed -n '/^---$/,/^---$/p' "$FILE" | sed '1d;$d')
+
+            # FR-002: id obligatorio
+            ID=$(echo "$FRONTMATTER" | grep "^id:" | sed 's/id: *//')
+            if [ -z "$ID" ]; then
+              echo "  ✗ FR-002 ERROR: Campo 'id' es obligatorio"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+
+            # FR-003: kebab-case
+            if ! echo "$ID" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+              echo "  ✗ FR-003 ERROR: id '$ID' no está en kebab-case"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-005: version obligatorio
+            VERSION=$(echo "$FRONTMATTER" | grep "^version:" | sed 's/version: *//')
+            if [ -z "$VERSION" ]; then
+              echo "  ✗ FR-005 ERROR: Campo 'version' es obligatorio"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-006: semver
+            if [ -n "$VERSION" ] && ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "  ✗ FR-006 ERROR: version '$VERSION' no es semver válido"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-007: scope obligatorio
+            SCOPE=$(echo "$FRONTMATTER" | grep "^scope:" | sed 's/scope: *//')
+            if [ -z "$SCOPE" ]; then
+              echo "  ✗ FR-007 ERROR: Campo 'scope' es obligatorio"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-008: scope válido
+            if [ -n "$SCOPE" ] && ! echo "$SCOPE" | grep -qE '^(global|chapter|stack)$'; then
+              echo "  ✗ FR-008 ERROR: scope '$SCOPE' debe ser global, chapter o stack"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-009: type obligatorio
+            TYPE=$(echo "$FRONTMATTER" | grep "^type:" | sed 's/type: *//')
+            if [ -z "$TYPE" ]; then
+              echo "  ✗ FR-009 ERROR: Campo 'type' es obligatorio"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-010: type válido
+            VALID_TYPES="skill steering agent workflow guardrail prompt persona doc adr convencion"
+            if [ -n "$TYPE" ] && ! echo "$VALID_TYPES" | grep -qw "$TYPE"; then
+              echo "  ✗ FR-010 ERROR: type '$TYPE' no es válido"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-011: chapter obligatorio si scope != global
+            CHAPTER=$(echo "$FRONTMATTER" | grep "^chapter:" | sed 's/chapter: *//')
+            if [ "$SCOPE" = "chapter" ] || [ "$SCOPE" = "stack" ]; then
+              if [ -z "$CHAPTER" ]; then
+                echo "  ✗ FR-011 ERROR: 'chapter' es obligatorio cuando scope=$SCOPE"
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+
+            # FR-012: chapter válido
+            if [ -n "$CHAPTER" ] && ! echo "$VALID_CHAPTERS" | grep -qw "$CHAPTER"; then
+              echo "  ✗ FR-012 ERROR: chapter '$CHAPTER' no es válido"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # OV-001/OV-002: pragma_extends y pragma_override van juntos
+            HAS_EXTENDS=$(echo "$FRONTMATTER" | grep "^pragma_extends:" || true)
+            HAS_OVERRIDE=$(echo "$FRONTMATTER" | grep "^pragma_override:" || true)
+            if [ -n "$HAS_EXTENDS" ] && [ -z "$HAS_OVERRIDE" ]; then
+              echo "  ✗ OV-001 ERROR: Si pragma_extends está presente, pragma_override es obligatorio"
+              ERRORS=$((ERRORS + 1))
+            fi
+            if [ -n "$HAS_OVERRIDE" ] && [ -z "$HAS_EXTENDS" ]; then
+              echo "  ✗ OV-002 ERROR: Si pragma_override está presente, pragma_extends es obligatorio"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # OV-003: pragma_override debe ser full o merge
+            if [ -n "$HAS_OVERRIDE" ]; then
+              OVERRIDE_VAL=$(echo "$FRONTMATTER" | grep "^pragma_override:" | sed 's/pragma_override: *//')
+              if ! echo "$OVERRIDE_VAL" | grep -qE '^(full|merge)$'; then
+                echo "  ✗ OV-003 ERROR: pragma_override debe ser 'full' o 'merge'"
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+
+            # ST-005: scope=global debe estar en shared/
+            if [ "$SCOPE" = "global" ] && ! echo "$FILE" | grep -q "^shared/"; then
+              echo "  ✗ ST-005 ERROR: scope=global debe estar bajo shared/"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # ST-002: debe estar bajo el chapter declarado
+            if [ -n "$CHAPTER" ] && ! echo "$FILE" | grep -q "chapters/$CHAPTER/"; then
+              echo "  ✗ ST-002 ERROR: Archivo debe estar bajo chapters/$CHAPTER/"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # CT-001: contenido después del frontmatter
+            CONTENT_LINES=$(sed -n '/^---$/,/^---$/!p' "$FILE" | sed '/^$/d' | wc -l)
+            if [ "$CONTENT_LINES" -eq 0 ]; then
+              echo "  ✗ CT-001 ERROR: No tiene contenido después del frontmatter"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # FR-015: description recomendado
+            DESC=$(echo "$FRONTMATTER" | grep "^description:" || true)
+            if [ -z "$DESC" ]; then
+              echo "  ⚠ FR-015 WARNING: Campo 'description' ausente"
+              WARNINGS=$((WARNINGS + 1))
+            fi
+
+            # CT: Validar secciones requeridas según asset-schemas.json
+            if [ -n "$TYPE" ] && [ -f "/tmp/asset-schemas.json" ]; then
+              REQUIRED_SECTIONS=$(jq -r ".types[\"$TYPE\"].required_sections[]?" "/tmp/asset-schemas.json" 2>/dev/null)
+              if [ -n "$REQUIRED_SECTIONS" ]; then
+                while IFS= read -r SECTION; do
+                  if ! grep -q "^${SECTION}$" "$FILE"; then
+                    echo "  ⚠ CT WARNING: Falta sección requerida '$SECTION' para type=$TYPE"
+                    WARNINGS=$((WARNINGS + 1))
+                  fi
+                done <<< "$REQUIRED_SECTIONS"
+              fi
+            fi
+
+            echo "  ✓ Validación completada"
+
+          done <<< "${{ steps.changed.outputs.files }}"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Resultado: $ERRORS errores · $WARNINGS advertencias"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "❌ PR bloqueado — resuelve los errores antes de continuar."
+            exit 1
+          fi
+
+          echo "✓ Todos los archivos pasaron la validación."

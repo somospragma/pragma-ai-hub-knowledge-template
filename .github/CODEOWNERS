@@ -1,0 +1,12 @@
+# SOPP AI Knowledge — Code Owners
+# Actualizar con los equipos correctos de la cuenta
+
+# AI Steward aprueba todo
+* @ai-steward-team
+
+# Chapter Leads aprueban su carpeta
+# chapters/backend/ @backend-chapter-lead
+# chapters/frontend/ @frontend-chapter-lead
+# chapters/mobile/ @mobile-chapter-lead
+# chapters/calidad/ @calidad-chapter-lead
+# chapters/arquitectura/ @arquitectura-chapter-lead
