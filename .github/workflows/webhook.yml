@@ -38,6 +38,10 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |
+          # Extraer solo el nombre del repo (sin la org)
+          REPO_NAME="${REPO_FULL_NAME#*/}"
+          echo "Repo name: $REPO_NAME"
+
           PAYLOAD="{\"ref\":\"${GIT_REF}\",\"repository\":{\"full_name\":\"${REPO_FULL_NAME}\",\"clone_url\":\"${REPO_CLONE_URL}\"},\"changed_files\":${CHANGED_FILES},\"pusher\":\"${PUSHER}\",\"commit_sha\":\"${COMMIT_SHA}\"}"
 
           SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$SOPP_WEBHOOK_SECRET" | sed 's/^.* //')
@@ -49,7 +53,7 @@ jobs:
             -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
             -H "X-GitHub-Event: push" \
             -H "X-GitHub-Delivery: ${RUN_ID}" \
-            -H "X-Repo-Name: ${REPO_FULL_NAME#*/}" \
+            -H "X-Repo-Name: ${REPO_NAME}" \
             -d "$PAYLOAD")
 
           echo "HTTP Status: $HTTP_CODE"
