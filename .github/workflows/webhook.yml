@@ -2,15 +2,21 @@ name: Notificar Hub
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'chapters/**/*.md'
       - 'shared/**/*.md'
+      - 'projects/**/*.md'
 
 jobs:
-  notify-hub:
-    name: Notificar cambios al Hub
+  # ─────────────────────────────────────────────
+  # Ambiente temporal (solo develop — eliminar cuando se retire)
+  # ─────────────────────────────────────────────
+  notify-hub-temporal:
+    name: Notificar Hub (temporal)
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: temporal
 
     steps:
       - name: Checkout
@@ -21,10 +27,10 @@ jobs:
       - name: Obtener archivos modificados
         id: changed
         run: |
-          FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(md|json)$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(md|json|mdc)$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "files=$FILES" >> $GITHUB_OUTPUT
 
-      - name: Notificar al Hub
+      - name: Notificar al Hub temporal
         if: steps.changed.outputs.files != '[]'
         env:
           SOPP_HUB_URL: ${{ secrets.SOPP_HUB_URL }}
@@ -32,21 +38,16 @@ jobs:
           SOPP_WEBHOOK_SECRET: ${{ secrets.SOPP_WEBHOOK_SECRET }}
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
           REPO_FULL_NAME: ${{ github.repository }}
-          REPO_CLONE_URL: https://github.com/${{ github.repository }}.git
           GIT_REF: ${{ github.ref }}
           PUSHER: ${{ github.actor }}
           COMMIT_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          # Extraer solo el nombre del repo (sin la org)
           REPO_NAME="${REPO_FULL_NAME#*/}"
-          echo "Repo name: $REPO_NAME"
-
-          PAYLOAD="{\"ref\":\"${GIT_REF}\",\"repository\":{\"full_name\":\"${REPO_FULL_NAME}\",\"clone_url\":\"${REPO_CLONE_URL}\"},\"changed_files\":${CHANGED_FILES},\"pusher\":\"${PUSHER}\",\"commit_sha\":\"${COMMIT_SHA}\"}"
-
+          PAYLOAD="{\"ref\":\"${GIT_REF}\",\"repository\":{\"full_name\":\"${REPO_FULL_NAME}\",\"clone_url\":\"https://github.com/${REPO_FULL_NAME}.git\"},\"changed_files\":${CHANGED_FILES},\"pusher\":\"${PUSHER}\",\"commit_sha\":\"${COMMIT_SHA}\"}"
           SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$SOPP_WEBHOOK_SECRET" | sed 's/^.* //')
 
-          HTTP_CODE=$(curl -s -o /tmp/webhook_response.txt -w "%{http_code}" \
+          HTTP_CODE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
             -X POST "${SOPP_HUB_URL}/webhook/github" \
             -H "Content-Type: application/json" \
             -H "x-api-key: ${SOPP_HUB_API_KEY}" \
@@ -57,12 +58,109 @@ jobs:
             -d "$PAYLOAD")
 
           echo "HTTP Status: $HTTP_CODE"
-          cat /tmp/webhook_response.txt
-          echo ""
+          cat /tmp/response.txt && echo ""
+          [ "$HTTP_CODE" -lt 400 ] && echo "✓ Hub temporal notificado" || { echo "❌ Falló"; exit 1; }
 
-          if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "❌ Webhook falló con status $HTTP_CODE"
-            exit 1
-          fi
+  # ─────────────────────────────────────────────
+  # Ambiente oficial DEV (solo develop)
+  # ─────────────────────────────────────────────
+  notify-hub-dev:
+    name: Notificar Hub (DEV)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: dev
 
-          echo "✓ Webhook enviado exitosamente"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Obtener archivos modificados
+        id: changed
+        run: |
+          FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(md|json|mdc)$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+      - name: Notificar al Hub DEV
+        if: steps.changed.outputs.files != '[]'
+        env:
+          SOPP_HUB_URL: ${{ secrets.SOPP_HUB_URL }}
+          SOPP_HUB_API_KEY: ${{ secrets.SOPP_HUB_API_KEY }}
+          SOPP_WEBHOOK_SECRET: ${{ secrets.SOPP_WEBHOOK_SECRET }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          GIT_REF: ${{ github.ref }}
+          PUSHER: ${{ github.actor }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          REPO_NAME="${REPO_FULL_NAME#*/}"
+          PAYLOAD="{\"ref\":\"${GIT_REF}\",\"repository\":{\"full_name\":\"${REPO_FULL_NAME}\",\"clone_url\":\"https://github.com/${REPO_FULL_NAME}.git\"},\"changed_files\":${CHANGED_FILES},\"pusher\":\"${PUSHER}\",\"commit_sha\":\"${COMMIT_SHA}\"}"
+          SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$SOPP_WEBHOOK_SECRET" | sed 's/^.* //')
+
+          HTTP_CODE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -X POST "${SOPP_HUB_URL}/webhook/github" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${SOPP_HUB_API_KEY}" \
+            -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+            -H "X-GitHub-Event: push" \
+            -H "X-GitHub-Delivery: ${RUN_ID}" \
+            -H "X-Repo-Name: ${REPO_NAME}" \
+            -d "$PAYLOAD")
+
+          echo "HTTP Status: $HTTP_CODE"
+          cat /tmp/response.txt && echo ""
+          [ "$HTTP_CODE" -lt 400 ] && echo "✓ Hub DEV notificado" || { echo "❌ Falló"; exit 1; }
+
+  # ─────────────────────────────────────────────
+  # Ambiente oficial PROD (solo main)
+  # ─────────────────────────────────────────────
+  notify-hub-prod:
+    name: Notificar Hub (PROD)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Obtener archivos modificados
+        id: changed
+        run: |
+          FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.(md|json|mdc)$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+
+      - name: Notificar al Hub PROD
+        if: steps.changed.outputs.files != '[]'
+        env:
+          SOPP_HUB_URL: ${{ secrets.SOPP_HUB_URL }}
+          SOPP_HUB_API_KEY: ${{ secrets.SOPP_HUB_API_KEY }}
+          SOPP_WEBHOOK_SECRET: ${{ secrets.SOPP_WEBHOOK_SECRET }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          GIT_REF: ${{ github.ref }}
+          PUSHER: ${{ github.actor }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          REPO_NAME="${REPO_FULL_NAME#*/}"
+          PAYLOAD="{\"ref\":\"${GIT_REF}\",\"repository\":{\"full_name\":\"${REPO_FULL_NAME}\",\"clone_url\":\"https://github.com/${REPO_FULL_NAME}.git\"},\"changed_files\":${CHANGED_FILES},\"pusher\":\"${PUSHER}\",\"commit_sha\":\"${COMMIT_SHA}\"}"
+          SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$SOPP_WEBHOOK_SECRET" | sed 's/^.* //')
+
+          HTTP_CODE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -X POST "${SOPP_HUB_URL}/webhook/github" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${SOPP_HUB_API_KEY}" \
+            -H "X-Hub-Signature-256: sha256=${SIGNATURE}" \
+            -H "X-GitHub-Event: push" \
+            -H "X-GitHub-Delivery: ${RUN_ID}" \
+            -H "X-Repo-Name: ${REPO_NAME}" \
+            -d "$PAYLOAD")
+
+          echo "HTTP Status: $HTTP_CODE"
+          cat /tmp/response.txt && echo ""
+          [ "$HTTP_CODE" -lt 400 ] && echo "✓ Hub PROD notificado" || { echo "❌ Falló"; exit 1; }

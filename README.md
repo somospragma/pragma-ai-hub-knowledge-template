@@ -24,28 +24,38 @@ Este repo extiende el [core](https://dev.azure.com/Pragma-SOPP/SOPP-Core/_git/kr
 ## Estructura
 
 ```
-chapters/                     ← Assets por chapter (misma estructura que core)
+chapters/                     ← Assets por chapter (2da capa: cuenta)
 ├── backend/
 │   ├── steering/
 │   ├── skills/
-│   │   ├── _all/
+│   │   ├── _all/             ← Aplica a todo backend sin distinción de stack
 │   │   ├── java-spring/
+│   │   ├── java-webflux/
 │   │   ├── node-express/
-│   │   └── ...
+│   │   ├── node-lambda/
+│   │   └── dotnet/
 │   ├── workflows/
 │   ├── guardrails/
 │   ├── prompts/
 │   ├── personas/
 │   └── convenciones/
 ├── calidad/
+│   └── skills/automation/
 ├── mobile/
+│   └── skills/flutter/, android-native/, apple-native/
 ├── frontend/
+│   └── skills/react/, angular/
 └── arquitectura/
 
-projects/                     ← Assets por proyecto (3ra capa de herencia)
-└── {nombre_proyecto}/
+projects/                     ← Assets por proyecto (3ra capa: proyecto)
+└── {nombre_proyecto}/        ← Nombre normalizado (lowercase, underscores)
     └── chapters/
-        └── ...               ← Misma estructura que chapters/
+        └── backend/
+            ├── steering/
+            ├── skills/
+            │   └── java-spring/
+            ├── workflows/
+            └── ...
 
 shared/                       ← Assets globales de la cuenta
 ├── steering/
@@ -55,6 +65,27 @@ shared/                       ← Assets globales de la cuenta
 ```
 
 > No necesitas crear todas las carpetas — solo las que tengan contenido.
+
+### Modelo de herencia (3 capas)
+
+```
+Prioridad: proyecto > cuenta > core
+
+┌─────────────────────────────────────────────────────┐
+│ Capa 3: PROYECTO (mayor prioridad)                  │
+│ projects/{proyecto}/chapters/{chapter}/skills/...    │
+│ Solo aplica al pragmático asignado a ese proyecto   │
+├─────────────────────────────────────────────────────┤
+│ Capa 2: CUENTA (este repo)                          │
+│ chapters/{chapter}/skills/...                        │
+│ Aplica a todos los pragmáticos de la cuenta         │
+├─────────────────────────────────────────────────────┤
+│ Capa 1: CORE (pragma-ai-hub-knowledge-core)         │
+│ Base para todos los pragmáticos de Pragma           │
+└─────────────────────────────────────────────────────┘
+```
+
+Si un asset con el mismo `id` existe en las 3 capas, el pragmático recibe el del **proyecto**. Si no existe en proyecto, recibe el de **cuenta**. Si no existe en cuenta, recibe el de **core**.
 
 ## Cómo crear un asset
 
@@ -129,19 +160,77 @@ Nueva sección que no existe en core (se agrega al final)
 
 ## Assets por proyecto (3ra capa)
 
-Si necesitas assets específicos para un proyecto dentro de la cuenta:
+Cuando necesitas assets específicos para un proyecto dentro de la cuenta, los colocas en `projects/{nombre_proyecto}/`. El nombre del proyecto es el **normalizado** (lowercase, espacios→underscores, sin tildes) — el mismo que retorna `GET /accounts`.
+
+### Ejemplo
+
+Si tu cuenta es `banco-mercantil` y tienes un proyecto `Agentes IA` (normalizado: `agentes_ia`):
 
 ```
 projects/
-└── agentes_ia/               ← nombre normalizado del proyecto
+└── agentes_ia/
     └── chapters/
         └── backend/
+            ├── steering/
+            │   └── agentes-ia-steering.md
             └── skills/
                 └── java-spring/
-                    └── mi-skill-proyecto.md
+                    └── agentes-ia-patterns.md
 ```
 
-La prioridad es: **proyecto > cuenta > core**. Si un asset existe en las 3 capas, el del proyecto gana.
+### Frontmatter de un asset de proyecto
+
+```yaml
+---
+id: agentes-ia-patterns
+version: 1.0.0
+scope: stack
+type: skill
+chapter: backend
+stack: [java-spring]
+description: Patrones específicos del proyecto Agentes IA
+---
+
+## Instrucción
+...
+```
+
+### Override desde proyecto
+
+Los assets de proyecto también pueden hacer override de assets de cuenta o core:
+
+```yaml
+---
+id: mismo-id-que-en-cuenta-o-core
+version: 1.0.0
+scope: stack
+type: skill
+chapter: backend
+stack: [java-spring]
+pragma_extends: chapters/backend/skills/java-spring/el-asset
+pragma_override: merge
+---
+
+## Sección que cambia para este proyecto
+Contenido específico del proyecto
+```
+
+### Cómo el CLI sabe qué proyecto usar
+
+El CLI llama a `GET /accounts` que retorna las asignaciones del pragmático (cuenta + proyecto). Cuando hace `POST /sync`, envía ambos:
+
+```json
+{
+  "workspace": "/path/to/project",
+  "tool": "kiro",
+  "chapter": "backend",
+  "stacks": ["java-spring"],
+  "cuenta": "banco-mercantil",
+  "proyecto": "agentes_ia"
+}
+```
+
+El Hub busca assets en este orden: `projects/agentes_ia/` → `chapters/` (cuenta) → core.
 
 ## Flujo de contribución
 
