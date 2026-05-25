@@ -1,0 +1,133 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:{{package_name}}/{{package_name}}.dart';
+import '../../helpers/pump_app.dart';
+
+void main() {
+  group('{{DS_PREFIX}}ComponentName', () {
+    // ═══════════════════════════════════════
+    // BASIC RENDERING
+    // ═══════════════════════════════════════
+    testWidgets('should render correctly with minimum params', (tester) async {
+      await tester.pumpApp(
+        const {{DS_PREFIX}}ComponentName(label: 'Test'),
+      );
+      expect(find.byType({{DS_PREFIX}}ComponentName), findsOneWidget);
+      expect(find.text('Test'), findsOneWidget);
+    });
+
+    testWidgets('should render correctly with all params', (tester) async {
+      await tester.pumpApp(
+        {{DS_PREFIX}}ComponentName(
+          label: 'Full',
+          variant: {{DS_PREFIX}}ComponentNameVariant.primary,
+          state: {{DS_PREFIX}}ComponentNameState.default_,
+          onPressed: () {},
+        ),
+      );
+      expect(find.byType({{DS_PREFIX}}ComponentName), findsOneWidget);
+    });
+
+    // ═══════════════════════════════════════
+    // STATES
+    // ═══════════════════════════════════════
+    group('states', () {
+      testWidgets('should show disabled with opacity', (tester) async {
+        await tester.pumpApp(
+          const {{DS_PREFIX}}ComponentName(
+            label: 'Disabled',
+            state: {{DS_PREFIX}}ComponentNameState.disabled,
+          ),
+        );
+        final opacity = tester.widget<Opacity>(find.byType(Opacity));
+        expect(opacity.opacity, 0.5);
+        expect(find.byType(IgnorePointer), findsOneWidget);
+      });
+
+      testWidgets('should show loading skeleton', (tester) async {
+        await tester.pumpApp(
+          const {{DS_PREFIX}}ComponentName(
+            label: 'Loading',
+            state: {{DS_PREFIX}}ComponentNameState.loading,
+          ),
+        );
+        expect(find.text('Loading'), findsNothing);
+      });
+    });
+
+    // ═══════════════════════════════════════
+    // VARIANTS
+    // ═══════════════════════════════════════
+    group('variants', () {
+      for (final variant in {{DS_PREFIX}}ComponentNameVariant.values) {
+        testWidgets('should render ${variant.name} variant', (tester) async {
+          await tester.pumpApp(
+            {{DS_PREFIX}}ComponentName(label: 'Variant', variant: variant),
+          );
+          expect(find.byType({{DS_PREFIX}}ComponentName), findsOneWidget);
+        });
+      }
+    });
+
+    // ═══════════════════════════════════════
+    // INTERACTIONS
+    // ═══════════════════════════════════════
+    group('interactions', () {
+      testWidgets('should invoke onPressed when tapped', (tester) async {
+        var pressed = false;
+        await tester.pumpApp(
+          {{DS_PREFIX}}ComponentName(label: 'Tap', onPressed: () => pressed = true),
+        );
+        await tester.tap(find.byType({{DS_PREFIX}}ComponentName));
+        expect(pressed, isTrue);
+      });
+
+      testWidgets('should not crash when onPressed is null', (tester) async {
+        await tester.pumpApp(
+          const {{DS_PREFIX}}ComponentName(label: 'Null'),
+        );
+        await tester.tap(find.byType({{DS_PREFIX}}ComponentName));
+      });
+
+      testWidgets('should not invoke when disabled', (tester) async {
+        var pressed = false;
+        await tester.pumpApp(
+          {{DS_PREFIX}}ComponentName(
+            label: 'Disabled',
+            state: {{DS_PREFIX}}ComponentNameState.disabled,
+            onPressed: () => pressed = true,
+          ),
+        );
+        await tester.tap(find.byType({{DS_PREFIX}}ComponentName));
+        expect(pressed, isFalse);
+      });
+    });
+
+    // ═══════════════════════════════════════
+    // DEFAULTS
+    // ═══════════════════════════════════════
+    group('defaults', () {
+      testWidgets('should use default state', (tester) async {
+        await tester.pumpApp(
+          const {{DS_PREFIX}}ComponentName(label: 'Defaults'),
+        );
+        expect(find.byType(Opacity), findsNothing);
+      });
+    });
+
+    // ═══════════════════════════════════════
+    // ACCESSIBILITY
+    // ═══════════════════════════════════════
+    group('accessibility', () {
+      testWidgets('should have correct semantics', (tester) async {
+        await tester.pumpApp(
+          const {{DS_PREFIX}}ComponentName(label: 'A11y'),
+        );
+        expect(
+          tester.getSemantics(find.byType({{DS_PREFIX}}ComponentName)),
+          isNotNull,
+        );
+      });
+    });
+  });
+}
