@@ -106,6 +106,31 @@ description: Qué hace este asset en una línea
 ## Contenido del asset...
 ```
 
+### Formato plano vs subcarpeta
+
+**Formato plano** — un solo archivo:
+```
+chapters/backend/skills/java-spring/api-design.md
+```
+
+**Formato subcarpeta** — asset con archivos de referencia:
+```
+chapters/mobile/skills/flutter/flutter-bloc-pattern/
+├── SKILL.md              ← Archivo principal (frontmatter canónico)
+├── references/           ← Se entregan al pragmático junto con el skill
+│   ├── event-pattern.mmd
+│   └── state-diagram.mmd
+└── scripts/
+    └── audit.sh
+```
+
+**Reglas de subcarpeta:**
+- El archivo principal se llama `{TYPE}.md` en mayúsculas: `SKILL.md`, `AGENT.md`, `WORKFLOW.md`, etc.
+- Las subcarpetas pueden tener cualquier nombre
+- **Todos los archivos se entregan al pragmático** manteniendo la estructura
+- Cada archivo se firma individualmente
+- En el IDE se escribe como: `.kiro/skills/flutter-bloc-pattern/SKILL.md` + `.kiro/skills/flutter-bloc-pattern/references/...`
+
 ## Override de assets del core
 
 Si quieres modificar un asset que ya existe en el core para esta cuenta:
