@@ -1,0 +1,325 @@
+# .github/workflows/release.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to your project at .github/workflows/release.yml
+# Configure the following secrets in GitHub repo → Settings → Secrets:
+#
+# Android:
+#   KEYSTORE_BASE64       base64-encoded .jks keystore file
+#   KEYSTORE_PASSWORD     keystore password
+#   KEY_ALIAS             key alias
+#   KEY_PASSWORD          key password
+#
+# iOS (Fastlane match):
+#   MATCH_PASSWORD        Fastlane match encryption password
+#   MATCH_GIT_URL         Git repo URL storing certificates
+#   ASC_KEY_ID            App Store Connect API key ID
+#   ASC_ISSUER_ID         App Store Connect issuer ID
+#   ASC_KEY_CONTENT       App Store Connect API key content (.p8)
+#
+# App:
+#   PROD_API_URL          Production API base URL
+#   FIREBASE_APP_ID_ANDROID  Firebase App ID (for Crashlytics symbols)
+#   FIREBASE_TOKEN        Firebase CLI token
+#   PLAY_SERVICE_ACCOUNT_JSON  Google Play service account JSON
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'   # matches v1.2.3
+
+env:
+  FLUTTER_VERSION: '3.32.0'       # ← pin to tested version, never use 'latest'
+
+jobs:
+  # ── 1. Quality Gates ──────────────────────────────────────────────────────
+  quality:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+
+      - run: flutter pub get
+
+      - name: Run build_runner
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Verify generated files are committed
+        run: |
+          git diff --exit-code -- "*.g.dart" "*.freezed.dart" "*.config.dart" || \
+          (echo "❌ Generated files out of date — run build_runner and commit" && exit 1)
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib/ test/
+
+      - name: Analyze
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Run tests with coverage
+        run: flutter test --coverage --reporter=github
+
+      - name: Enforce coverage threshold (80%)
+        run: |
+          sudo apt-get install -y lcov
+          lcov --remove coverage/lcov.info \
+            '*.freezed.dart' '*.g.dart' '*.config.dart' \
+            -o coverage/filtered.info
+          COVERAGE=$(lcov --summary coverage/filtered.info 2>&1 \
+            | grep "lines" | awk '{print $2}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% is below 80% threshold"
+            exit 1
+          fi
+          echo "✅ Coverage ${COVERAGE}% meets threshold"
+
+  # ── 2. Build Android ──────────────────────────────────────────────────────
+  build-android:
+    name: Build Android AAB
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/keystore.jks
+
+      - name: Create key.properties
+        run: |
+          cat > android/key.properties << EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=keystore.jks
+          EOF
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+          echo "build_number=${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Update pubspec.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build App Bundle
+        run: |
+          flutter build appbundle --release \
+            --obfuscate \
+            --split-debug-info=build/symbols/android \
+            --dart-define=API_BASE_URL=${{ secrets.PROD_API_URL }} \
+            --dart-define=IS_PRODUCTION=true \
+            --build-number=${{ steps.version.outputs.build_number }}
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      - name: Upload Android debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-symbols
+          path: build/symbols/android/
+          retention-days: 90
+
+  # ── 3. Build iOS ──────────────────────────────────────────────────────────
+  build-ios:
+    name: Build iOS IPA
+    needs: quality
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+
+      - name: Setup Ruby (for Fastlane)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+          echo "build_number=${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Update pubspec.yaml version
+        run: |
+          sed -i '' "s/^version:.*/version: ${{ steps.version.outputs.version }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
+
+      - run: flutter pub get
+      - run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build iOS (no codesign — Fastlane handles signing)
+        run: |
+          flutter build ios --release --no-codesign \
+            --obfuscate \
+            --split-debug-info=build/symbols/ios \
+            --dart-define=API_BASE_URL=${{ secrets.PROD_API_URL }} \
+            --dart-define=IS_PRODUCTION=true \
+            --build-number=${{ steps.version.outputs.build_number }}
+
+      - name: Archive and sign with Fastlane
+        run: cd ios && bundle exec fastlane release
+        env:
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: ios/build/Runner.ipa
+          retention-days: 30
+
+      - name: Upload iOS debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-symbols
+          path: build/symbols/ios/
+          retention-days: 90
+
+  # ── 4. Distribute ─────────────────────────────────────────────────────────
+  distribute-android:
+    name: Distribute Android → Play Store (internal)
+    needs: build-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download AAB
+        uses: actions/download-artifact@v4
+        with:
+          name: android-aab
+          path: build/
+
+      - name: Upload to Play Store (internal track)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.example.yourapp   # ← replace with your package name
+          releaseFiles: build/app-release.aab
+          track: internal
+          status: completed
+
+  distribute-ios:
+    name: Distribute iOS → TestFlight
+    needs: build-ios
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa
+          path: ios/build/
+
+      - name: Upload to TestFlight
+        run: cd ios && bundle exec fastlane upload_testflight
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          IPA_PATH: ios/build/Runner.ipa
+
+  # ── 5. Post-Release ───────────────────────────────────────────────────────
+  post-release:
+    name: Post-Release Tasks
+    needs: [distribute-android, distribute-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Android debug symbols
+        uses: actions/download-artifact@v4
+        with:
+          name: android-symbols
+          path: build/symbols/android/
+
+      - name: Upload symbols to Firebase Crashlytics
+        run: |
+          npm install -g firebase-tools
+          firebase crashlytics:symbols:upload \
+            --app=${{ secrets.FIREBASE_APP_ID_ANDROID }} \
+            build/symbols/android/
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            build/symbols/android/**
